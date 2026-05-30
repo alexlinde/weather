@@ -11,9 +11,13 @@ export async function loadRasterTexture(
     const res = await fetch(url, { signal });
     if (!res.ok) return null;
     const blob = await res.blob();
-    // createImageBitmap is available in all modern browsers (web target).
-    const bmp = await createImageBitmap(blob);
+    // WebGL ignores texture.flipY for ImageBitmap sources, so pre-flip the
+    // bitmap at decode time to match three.js's default (flipped-Y) UV
+    // convention that the ground-quad UVs assume. Without this the raster
+    // tiles render upside down.
+    const bmp = await createImageBitmap(blob, { imageOrientation: 'flipY' });
     const tex = new THREE.Texture(bmp as unknown as HTMLImageElement);
+    tex.flipY = false;
     tex.magFilter = THREE.LinearFilter;
     tex.minFilter = THREE.LinearFilter;
     tex.wrapS = THREE.ClampToEdgeWrapping;
