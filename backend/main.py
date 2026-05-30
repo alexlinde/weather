@@ -56,7 +56,10 @@ async def lifespan(app: FastAPI):
     from . import disk_cache, pipeline
 
     disk_cache.migrate_legacy_cache()
-    disk_cache.evict_older_than(hours=24)
+    # In dev mode we keep whatever is on disk (often old sample data) and never
+    # touch S3, so skip age-based eviction that would wipe the cached frames.
+    if not DEV_MODE:
+        disk_cache.evict_older_than(hours=24)
 
     _refresh_stop = asyncio.Event()
 
@@ -82,9 +85,10 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.exception("Periodic refresh failed")
 
+    refresh_task: asyncio.Task | None = None
     if DEV_MODE:
         n = pipeline.warm_from_disk(limit=30)
-        logger.info("DEV_MODE: warmed %d frames from disk cache (no S3 fetch)", n)
+        logger.info("DEV_MODE: warmed %d frames from disk cache (no S3, no refresh)", n)
     else:
         def _bg_seed():
             try:
@@ -96,17 +100,18 @@ async def lifespan(app: FastAPI):
         threading.Thread(target=_bg_seed, daemon=True, name="cache-seed").start()
         logger.info("Cache seeding started in background — server ready")
 
-    refresh_task = asyncio.create_task(_periodic_refresh())
-    logger.info("Periodic refresh task started (every %ds)", REFRESH_INTERVAL_S)
+        refresh_task = asyncio.create_task(_periodic_refresh())
+        logger.info("Periodic refresh task started (every %ds)", REFRESH_INTERVAL_S)
 
     yield
 
     _refresh_stop.set()
-    refresh_task.cancel()
-    try:
-        await refresh_task
-    except asyncio.CancelledError:
-        pass
+    if refresh_task is not None:
+        refresh_task.cancel()
+        try:
+            await refresh_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Weather Radar API", version="5.0.0", lifespan=lifespan)

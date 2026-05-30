@@ -38,6 +38,9 @@ export function RadarMap({ lat, lon, testID, apiBase }: RadarMapProps) {
           viewMode={radar.viewMode}
           preset={radar.preset}
           opacity={radar.opacity}
+          verticalExaggeration={radar.verticalExaggeration}
+          dbzMin={radar.dbzMin}
+          dbzMax={radar.dbzMax}
           actions={radar.actions}
           onExpand={() => setFullScreen(true)}
         />
@@ -84,6 +87,9 @@ function FullscreenRadar({
           viewMode={radar.viewMode}
           preset={radar.preset}
           opacity={radar.opacity}
+          verticalExaggeration={radar.verticalExaggeration}
+          dbzMin={radar.dbzMin}
+          dbzMax={radar.dbzMax}
           actions={radar.actions}
           onToggleLegend={() => setShowLegend((v) => !v)}
         />

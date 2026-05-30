@@ -1,7 +1,8 @@
 /**
- * Multi-touch gestures → camera transforms, replacing MapLibre's built-in
- * handlers. One finger pans, pinch zooms about the focal point, two-finger
- * rotation sets bearing, and a two-finger vertical drag sets pitch.
+ * Touch gestures → camera transforms, replacing MapLibre's built-in handlers.
+ * One finger pans and pinch zooms about the focal point. Rotation (bearing) and
+ * user-driven pitch are intentionally disabled — the only camera tilt is the
+ * automatic pitch applied when switching to 3D/volume view modes.
  *
  * Handlers run on the JS thread (`runOnJS(true)`) so they can call straight into
  * the controller's camera math.
@@ -16,8 +17,6 @@ export function useRadarGestures(controller: RadarController | null) {
     lastX: 0,
     lastY: 0,
     lastScale: 1,
-    lastRotation: 0,
-    lastTwoY: 0,
   });
 
   return useMemo(() => {
@@ -37,20 +36,6 @@ export function useRadarGestures(controller: RadarController | null) {
       })
       .runOnJS(true);
 
-    const pitchPan = Gesture.Pan()
-      .minPointers(2)
-      .maxPointers(2)
-      .onBegin((e) => {
-        s.lastTwoY = e.y;
-      })
-      .onUpdate((e) => {
-        if (!controller) return;
-        const dPitch = -(e.y - s.lastTwoY) * 0.4;
-        if (Math.abs(dPitch) > 0.01) controller.rotateBy(0, dPitch);
-        s.lastTwoY = e.y;
-      })
-      .runOnJS(true);
-
     const pinch = Gesture.Pinch()
       .onBegin(() => {
         s.lastScale = 1;
@@ -63,18 +48,6 @@ export function useRadarGestures(controller: RadarController | null) {
       })
       .runOnJS(true);
 
-    const rotation = Gesture.Rotation()
-      .onBegin(() => {
-        s.lastRotation = 0;
-      })
-      .onUpdate((e) => {
-        if (!controller) return;
-        const dDeg = ((e.rotation - s.lastRotation) * 180) / Math.PI;
-        controller.rotateBy(dDeg, 0);
-        s.lastRotation = e.rotation;
-      })
-      .runOnJS(true);
-
-    return Gesture.Simultaneous(pan, pitchPan, pinch, rotation);
+    return Gesture.Simultaneous(pan, pinch);
   }, [controller]);
 }

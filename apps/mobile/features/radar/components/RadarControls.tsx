@@ -14,6 +14,7 @@ const PRESETS: { key: PresetKey; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'precip', label: 'Precip' },
   { key: 'severe', label: 'Severe' },
+  { key: 'custom', label: 'Custom' },
 ];
 
 export interface RadarControlsActions {
@@ -22,6 +23,8 @@ export interface RadarControlsActions {
   setMode: (mode: ViewMode) => void;
   setPreset: (key: PresetKey) => void;
   setOpacity: (val: number) => void;
+  setVerticalExaggeration: (val: number) => void;
+  setDbzRange: (min: number, max: number) => void;
 }
 
 interface RadarControlsProps {
@@ -31,6 +34,9 @@ interface RadarControlsProps {
   viewMode: ViewMode;
   preset: PresetKey;
   opacity: number;
+  verticalExaggeration: number;
+  dbzMin: number;
+  dbzMax: number;
   actions: RadarControlsActions;
   onExpand?: () => void;
   onToggleLegend?: () => void;
@@ -77,7 +83,7 @@ export function RadarControls(props: RadarControlsProps) {
           maximumValue={maxIdx}
           step={1}
           value={frame.index}
-          onSlidingComplete={(v) => {
+          onValueChange={(v) => {
             if (frame.total > 1) actions.seek(Math.round(v));
           }}
           minimumTrackTintColor="#f5c842"
@@ -148,6 +154,64 @@ export function RadarControls(props: RadarControlsProps) {
               testID="radar-intensity"
             />
           </View>
+
+          {props.viewMode !== 'composite' && (
+            <View style={styles.intensityRow} testID="radar-exaggeration">
+              <Text style={styles.intensityLabel}>
+                {`Vert. scale  ${props.verticalExaggeration.toFixed(1)}x`}
+              </Text>
+              <Slider
+                style={styles.intensitySlider}
+                minimumValue={1}
+                maximumValue={10}
+                step={0.5}
+                value={props.verticalExaggeration}
+                onValueChange={actions.setVerticalExaggeration}
+                minimumTrackTintColor="#f5c842"
+                maximumTrackTintColor="#1e1e1e"
+                thumbTintColor="#f5c842"
+                testID="radar-exaggeration-slider"
+              />
+            </View>
+          )}
+
+          {props.preset === 'custom' && (
+            <View style={styles.dbzBlock} testID="radar-dbz-range">
+              <Text style={styles.intensityLabel}>
+                {`dBZ range  ${props.dbzMin} – ${props.dbzMax}`}
+              </Text>
+              <View style={styles.dbzRow}>
+                <Text style={styles.dbzEnd}>min</Text>
+                <Slider
+                  style={styles.dbzSlider}
+                  minimumValue={-30}
+                  maximumValue={75}
+                  step={5}
+                  value={props.dbzMin}
+                  onValueChange={(v) => actions.setDbzRange(v, props.dbzMax)}
+                  minimumTrackTintColor="#1e1e1e"
+                  maximumTrackTintColor="#3fb950"
+                  thumbTintColor="#f5c842"
+                  testID="radar-dbz-min"
+                />
+              </View>
+              <View style={styles.dbzRow}>
+                <Text style={styles.dbzEnd}>max</Text>
+                <Slider
+                  style={styles.dbzSlider}
+                  minimumValue={-30}
+                  maximumValue={75}
+                  step={5}
+                  value={props.dbzMax}
+                  onValueChange={(v) => actions.setDbzRange(props.dbzMin, v)}
+                  minimumTrackTintColor="#3fb950"
+                  maximumTrackTintColor="#1e1e1e"
+                  thumbTintColor="#f5c842"
+                  testID="radar-dbz-max"
+                />
+              </View>
+            </View>
+          )}
         </>
       )}
     </View>
@@ -230,4 +294,8 @@ const styles = StyleSheet.create({
   intensityRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   intensityLabel: { color: '#8b949e', fontSize: 11, minWidth: 56 },
   intensitySlider: { flex: 1, height: 32 },
+  dbzBlock: { gap: 2 },
+  dbzRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  dbzEnd: { color: '#8b949e', fontSize: 10, minWidth: 26 },
+  dbzSlider: { flex: 1, height: 30 },
 });

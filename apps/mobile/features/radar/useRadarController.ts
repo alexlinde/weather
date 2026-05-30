@@ -8,6 +8,7 @@ import { Platform } from 'react-native';
 
 import { basemapUrlTemplate } from './BasemapLayer';
 import { RadarController, type GLHostContext } from './RadarController';
+import { RADAR_PRESETS } from './RadarEngine';
 import type { LngLat } from './mercator';
 import type {
   FrameUpdate,
@@ -52,6 +53,11 @@ export function useRadarController(opts: UseRadarControllerOpts) {
   const [viewMode, setViewMode] = useState<ViewMode>('composite');
   const [preset, setPreset] = useState<PresetKey>('all');
   const [opacity, setOpacityState] = useState(0.8);
+  const [verticalExaggeration, setVEState] = useState(1);
+  const [dbzRange, setDbzRangeState] = useState<{ min: number; max: number }>({
+    min: 5,
+    max: 75,
+  });
 
   // Subscribe to engine events.
   useEffect(() => {
@@ -100,7 +106,15 @@ export function useRadarController(opts: UseRadarControllerOpts) {
       togglePlay: () => controller.engine.togglePlay(),
       seek: (idx: number) => controller.engine.setFrameIndex(idx),
       setMode: (mode: ViewMode) => controller.setViewMode(mode),
-      setPreset: (key: PresetKey) => controller.engine.switchPreset(key),
+      setPreset: (key: PresetKey) => {
+        controller.engine.switchPreset(key);
+        const p = RADAR_PRESETS[key];
+        if (p) {
+          setDbzRangeState({ min: p.dbzMin, max: p.dbzMax });
+          setOpacityState(p.intensity);
+        }
+        controller.requestRender();
+      },
       setOpacity: (val: number) => {
         controller.engine.setOpacity(val);
         setOpacityState(val);
@@ -108,9 +122,14 @@ export function useRadarController(opts: UseRadarControllerOpts) {
       },
       setVerticalExaggeration: (val: number) => {
         controller.engine.setVerticalExaggeration(val);
+        setVEState(val);
         controller.requestRender();
       },
-      setDbzRange: (min: number, max: number) => controller.engine.setDbzRange(min, max),
+      setDbzRange: (min: number, max: number) => {
+        controller.engine.setDbzRange(min, max);
+        setDbzRangeState({ min, max });
+        controller.requestRender();
+      },
     }),
     [controller],
   );
@@ -124,6 +143,9 @@ export function useRadarController(opts: UseRadarControllerOpts) {
     viewMode,
     preset,
     opacity,
+    verticalExaggeration,
+    dbzMin: dbzRange.min,
+    dbzMax: dbzRange.max,
     onGLCreated,
     onResize: (w: number, h: number, dpr: number) => controller.setSize(w, h, dpr),
     actions,
