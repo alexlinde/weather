@@ -1,0 +1,374 @@
+"""
+FastAPI backend for the Weather Radar viewer.
+
+Endpoints:
+    GET /api/radar/atlas/{timestamp}/{z}/{x}/{y}.png — atlas tile (8 tilts, grayscale PNG)
+    GET /api/radar/motion/{timestamp}.png            — motion vector field (RGB PNG)
+    GET /api/radar/timestamps                        — available timestamps
+    GET /api/radar/refresh                           — force re-seed
+    GET /api/config                                  — frontend map config
+    GET /health                                      — cache status
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass
+
+
+# ── Lifespan: migrate legacy cache, evict stale files, seed frames ───────────
+
+
+DEV_MODE = os.getenv("DEV_MODE", "").lower() in ("1", "true", "yes")
+
+
+REFRESH_INTERVAL_S = 60
+PURGE_MAX_AGE_H = 3.0
+PURGE_MAX_FRAMES = 60
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    import threading
+    from . import disk_cache, pipeline
+
+    disk_cache.migrate_legacy_cache()
+    disk_cache.evict_older_than(hours=24)
+
+    _refresh_stop = asyncio.Event()
+
+    async def _periodic_refresh():
+        """Check S3 for new frames and purge stale data every REFRESH_INTERVAL_S."""
+        while not _refresh_stop.is_set():
+            try:
+                await asyncio.sleep(REFRESH_INTERVAL_S)
+            except asyncio.CancelledError:
+                break
+            if _refresh_stop.is_set():
+                break
+            try:
+                fetched = await asyncio.to_thread(pipeline.refresh_new_frames, 20)
+                purged = await asyncio.to_thread(
+                    pipeline.purge_stale_data, PURGE_MAX_AGE_H, PURGE_MAX_FRAMES,
+                )
+                if fetched or purged:
+                    logger.info(
+                        "Periodic refresh: %d new frames, %d stale entries purged",
+                        fetched, purged,
+                    )
+            except Exception:
+                logger.exception("Periodic refresh failed")
+
+    if DEV_MODE:
+        n = pipeline.warm_from_disk(limit=30)
+        logger.info("DEV_MODE: warmed %d frames from disk cache (no S3 fetch)", n)
+    else:
+        def _bg_seed():
+            try:
+                n = pipeline.seed_frames(60)
+                logger.info("Seeding complete: %d timestamps cached", n)
+            except Exception:
+                logger.exception("Frame seeding failed")
+
+        threading.Thread(target=_bg_seed, daemon=True, name="cache-seed").start()
+        logger.info("Cache seeding started in background — server ready")
+
+    refresh_task = asyncio.create_task(_periodic_refresh())
+    logger.info("Periodic refresh task started (every %ds)", REFRESH_INTERVAL_S)
+
+    yield
+
+    _refresh_stop.set()
+    refresh_task.cancel()
+    try:
+        await refresh_task
+    except asyncio.CancelledError:
+        pass
+
+
+app = FastAPI(title="Weather Radar API", version="5.0.0", lifespan=lifespan)
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
+# Weather Company proxy: /api/weather/{current,forecast,history}
+from .weather import weather_router  # noqa: E402
+
+app.include_router(weather_router)
+
+
+# ── Atlas tiles (8 tilts packed into one grayscale PNG) ───────────────────────
+
+
+MAX_FRAMES = 30
+
+
+@app.get("/api/radar/atlas/{timestamp}/{z}/{x}/{y}.png")
+def radar_atlas_tile(timestamp: str, z: int, x: int, y: int):
+    """Serve a 256×2048 grayscale PNG atlas tile with 8 tilt bands."""
+    from .cache import tilt_cache
+    from .tiles import (
+        MAX_ZOOM, MIN_ZOOM,
+        atlas_tile_cache, render_atlas_tile,
+    )
+
+    if z < MIN_ZOOM or z > MAX_ZOOM:
+        raise HTTPException(status_code=400, detail=f"Zoom must be {MIN_ZOOM}–{MAX_ZOOM}")
+
+    tilt_entry = tilt_cache.get(timestamp)
+    if tilt_entry is None:
+        raise HTTPException(status_code=404, detail="Timestamp not found")
+
+    cache_key = (timestamp, z, x, y)
+    cached = atlas_tile_cache.get(cache_key)
+    if cached is None:
+        cached = render_atlas_tile(
+            tilt_entry["grids"], tilt_entry["meta"], z, x, y,
+        )
+        atlas_tile_cache.put(cache_key, cached)
+
+    return Response(
+        content=cached,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600, immutable"},
+    )
+
+
+# ── Raw atlas tiles (single-channel uint8 — for native DataTexture upload) ────
+
+
+@app.get("/api/radar/atlas-raw/{timestamp}/{z}/{x}/{y}.bin")
+def radar_atlas_tile_raw(timestamp: str, z: int, x: int, y: int):
+    """Serve a 256×2048 single-channel uint8 atlas tile as raw bytes.
+
+    Identical payload to the ``.png`` endpoint but undecoded, so React Native
+    (which lacks ``createImageBitmap``/canvas) can upload it straight to an R8
+    ``DataTexture`` without a client-side PNG decode.
+    """
+    from .cache import tilt_cache
+    from .tiles import MAX_ZOOM, MIN_ZOOM, raw_tile_cache, render_atlas_raw
+
+    if z < MIN_ZOOM or z > MAX_ZOOM:
+        raise HTTPException(status_code=400, detail=f"Zoom must be {MIN_ZOOM}–{MAX_ZOOM}")
+
+    tilt_entry = tilt_cache.get(timestamp)
+    if tilt_entry is None:
+        raise HTTPException(status_code=404, detail="Timestamp not found")
+
+    cache_key = (timestamp, z, x, y)
+    cached = raw_tile_cache.get(cache_key)
+    if cached is None:
+        cached = render_atlas_raw(tilt_entry["grids"], tilt_entry["meta"], z, x, y)
+        raw_tile_cache.put(cache_key, cached)
+
+    return Response(
+        content=cached,
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "public, max-age=3600, immutable"},
+    )
+
+
+# ── Motion vector tiles ──────────────────────────────────────────────────────
+
+
+@app.get("/api/radar/motion/{timestamp}.png")
+def radar_motion_tile(timestamp: str):
+    """Serve the motion vector field for *timestamp* → next frame as RGB PNG."""
+    from . import disk_cache
+
+    png = disk_cache.get_motion_png(timestamp)
+    if png is None:
+        raise HTTPException(status_code=404, detail="Motion data not available")
+
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600, immutable"},
+    )
+
+
+@app.get("/api/radar/motion-raw/{timestamp}.bin")
+def radar_motion_tile_raw(timestamp: str):
+    """Serve the motion field as raw RGB bytes (for native DataTexture upload).
+
+    Decodes the stored motion PNG server-side so React Native doesn't need a PNG
+    decoder. Width/height are returned in the X-Width / X-Height headers.
+    """
+    import io
+
+    from PIL import Image
+
+    from . import disk_cache
+
+    png = disk_cache.get_motion_png(timestamp)
+    if png is None:
+        raise HTTPException(status_code=404, detail="Motion data not available")
+
+    img = Image.open(io.BytesIO(png)).convert("RGB")
+    w, h = img.size
+    return Response(
+        content=img.tobytes(),
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "public, max-age=3600, immutable",
+            "X-Width": str(w),
+            "X-Height": str(h),
+        },
+    )
+
+
+# ── Timestamps ───────────────────────────────────────────────────────────────
+
+
+def _parse_ts(iso: str) -> datetime:
+    return datetime.fromisoformat(iso.replace("Z", "+00:00"))
+
+
+def _annotate_gaps(entries: list[dict]) -> tuple[list[dict], dict]:
+    """Add per-entry gap_before_s / is_gap and return summary gap_info."""
+    if len(entries) < 2:
+        for e in entries:
+            e["gap_before_s"] = None
+            e["is_gap"] = False
+        return entries, {"expected_cadence_s": 120, "gap_count": 0, "max_gap_s": 0}
+
+    deltas: list[float] = []
+    for i in range(1, len(entries)):
+        t0 = _parse_ts(entries[i - 1]["timestamp"])
+        t1 = _parse_ts(entries[i]["timestamp"])
+        deltas.append((t1 - t0).total_seconds())
+
+    cadence = sorted(deltas)[len(deltas) // 2]
+    threshold = cadence * 1.5
+
+    entries[0]["gap_before_s"] = None
+    entries[0]["is_gap"] = False
+    gap_count = 0
+    max_gap = 0.0
+    for i, dt in enumerate(deltas):
+        is_gap = dt > threshold
+        entries[i + 1]["gap_before_s"] = dt
+        entries[i + 1]["is_gap"] = is_gap
+        if is_gap:
+            gap_count += 1
+        if dt > max_gap:
+            max_gap = dt
+
+    gap_info = {
+        "expected_cadence_s": cadence,
+        "gap_count": gap_count,
+        "max_gap_s": max_gap,
+    }
+    return entries, gap_info
+
+
+@app.get("/api/radar/timestamps")
+def radar_timestamps():
+    """Return the list of available radar timestamps with motion availability."""
+    from . import disk_cache
+    from .motion import MAX_DISP_DEG
+
+    raw_entries = disk_cache.list_tilt_grid_timestamps()
+    if not raw_entries:
+        raise HTTPException(
+            status_code=503,
+            detail="No frames cached yet — server is still seeding",
+        )
+    entries = [dict(e) for e in raw_entries[-MAX_FRAMES:]]
+    entries, gap_info = _annotate_gaps(entries)
+    return {
+        "timestamps": entries,
+        "count": len(entries),
+        "motion": {"max_disp_deg": MAX_DISP_DEG},
+        "gap_info": gap_info,
+    }
+
+
+# ── Admin / config ───────────────────────────────────────────────────────────
+
+
+@app.get("/api/radar/refresh")
+async def radar_refresh():
+    """Force cache invalidation and re-seed."""
+    from . import pipeline
+
+    pipeline.invalidate_all()
+    count = await asyncio.to_thread(pipeline.seed_frames, 60)
+    return {"status": "refreshed", "frames": count}
+
+
+@app.get("/api/config")
+async def api_config():
+    """Return frontend configuration (basemap tile API keys, default station)."""
+    return {
+        "stadia_api_key": os.getenv("STADIA_API_KEY", ""),
+        "maptiler_api_key": os.getenv("MAPTILER_API_KEY", ""),
+        "default_station": os.getenv("WU_DEFAULT_STATION", "KCATRUCK306"),
+    }
+
+
+@app.get("/health")
+async def health():
+    from .cache import tilt_cache
+    from . import disk_cache
+
+    return {
+        "status": "ok",
+        "cached_in_memory": tilt_cache.count(),
+        "cached_on_disk": len(disk_cache.list_tilt_grid_timestamps()),
+    }
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness probe: returns 200 once frames are available, 503 during seeding."""
+    from . import disk_cache
+
+    entries = disk_cache.list_tilt_grid_timestamps()
+    if not entries:
+        raise HTTPException(status_code=503, detail="Seeding in progress")
+    return {"status": "ready", "frames": len(entries)}
+
+
+# ── Serve the Expo web export ────────────────────────────────────────────────
+# `pnpm build:web` exports the Expo (react-native-web) app into backend/web.
+# In dev (no export built yet) we skip the mount so the API still runs.
+
+_WEB_DIR = Path(__file__).resolve().parent / "web"
+if _WEB_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=_WEB_DIR, html=True), name="web")
+else:
+    @app.get("/")
+    async def _no_web():
+        return {
+            "status": "ok",
+            "note": "Web export not built. Run `pnpm build:web`. API is at /api/*.",
+        }

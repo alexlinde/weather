@@ -1,0 +1,22 @@
+data/
+.env
+.git/
+__pycache__/
+*.pyc
+tests/
+scripts/
+demo/
+.pytest_cache/
+*.egg-info/
+GR2Analyst.md
+
+# Node / Expo
+node_modules/
+**/node_modules/
+.expo/
+apps/mobile/dist/
+backend/web/
+
+# Old source repos (not part of the build context)
+weather_cloud/
+weather_radar/
