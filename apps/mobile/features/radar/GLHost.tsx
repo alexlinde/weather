@@ -7,13 +7,15 @@ import * as THREE from 'three';
 
 import type { GLHostProps } from './glHostTypes';
 
-export function GLHost({ onCreated, onResize, style }: GLHostProps) {
+export function GLHost({ onCreated, onResize, onWheelZoom, style }: GLHostProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const onCreatedRef = useRef(onCreated);
   const onResizeRef = useRef(onResize);
+  const onWheelZoomRef = useRef(onWheelZoom);
   onCreatedRef.current = onCreated;
   onResizeRef.current = onResize;
+  onWheelZoomRef.current = onWheelZoom;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -55,8 +57,24 @@ export function GLHost({ onCreated, onResize, style }: GLHostProps) {
       onResizeRef.current?.(r.width, r.height, window.devicePixelRatio || 1);
     });
     ro.observe(container);
+
+    // Mouse wheel / trackpad zoom (replaces MapLibre scroll-zoom). Trackpad
+    // pinch arrives as a wheel event with ctrlKey set and small deltas, so it
+    // gets a larger factor than a discrete mouse wheel notch.
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const r = container.getBoundingClientRect();
+      const focalX = e.clientX - r.left;
+      const focalY = e.clientY - r.top;
+      const factor = e.ctrlKey ? 0.01 : 0.0025;
+      const dZoom = -e.deltaY * factor;
+      onWheelZoomRef.current?.(focalX, focalY, dZoom);
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+
     return () => {
       ro.disconnect();
+      canvas.removeEventListener('wheel', onWheel);
       renderer.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

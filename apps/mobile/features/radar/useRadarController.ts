@@ -99,7 +99,7 @@ export function useRadarController(opts: UseRadarControllerOpts) {
     () => ({
       togglePlay: () => controller.engine.togglePlay(),
       seek: (idx: number) => controller.engine.setFrameIndex(idx),
-      setMode: (mode: ViewMode) => controller.engine.setViewMode(mode),
+      setMode: (mode: ViewMode) => controller.setViewMode(mode),
       setPreset: (key: PresetKey) => controller.engine.switchPreset(key),
       setOpacity: (val: number) => {
         controller.engine.setOpacity(val);

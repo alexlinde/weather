@@ -10,7 +10,16 @@ import { RadarCamera } from './RadarCamera';
 import { RadarEngine } from './RadarEngine';
 import { RadarScene } from './RadarScene';
 import type { LngLat } from './mercator';
-import type { RadarConfig } from './types';
+import type { RadarConfig, ViewMode } from './types';
+
+interface CamAnim {
+  fromPitch: number;
+  toPitch: number;
+  fromBearing: number;
+  toBearing: number;
+  start: number;
+  dur: number;
+}
 
 export interface GLHostContext {
   renderer: THREE.WebGLRenderer;
@@ -31,6 +40,7 @@ export class RadarController {
   private _needsRender = true;
   private _disposed = false;
   private _started = false;
+  private _camAnim: CamAnim | null = null;
 
   constructor(opts: {
     apiBase: string;
@@ -90,6 +100,7 @@ export class RadarController {
     if (this._rafId != null) return;
     const tick = () => {
       if (this._disposed || !this._ctx) return;
+      if (this._camAnim) this._stepCamAnim();
       if (this._needsRender) {
         this._needsRender = false;
         this.scene.render();
@@ -98,6 +109,44 @@ export class RadarController {
       this._rafId = requestAnimationFrame(tick);
     };
     this._rafId = requestAnimationFrame(tick);
+  }
+
+  /**
+   * Switch the radar view mode and tilt the camera to match: 3D/volume modes
+   * ease into a pitched perspective (like the original MapLibre `easeTo`),
+   * composite returns to a flat top-down view.
+   */
+  setViewMode(mode: ViewMode): void {
+    this.engine.setViewMode(mode);
+    const toPitch = mode === 'composite' ? 0 : 50;
+    const toBearing = mode === 'composite' ? 0 : this.camera.bearing;
+    this._camAnim = {
+      fromPitch: this.camera.pitch,
+      toPitch,
+      fromBearing: this.camera.bearing,
+      toBearing,
+      start: Date.now(),
+      dur: 600,
+    };
+    this._needsRender = true;
+  }
+
+  private _stepCamAnim(): void {
+    const a = this._camAnim;
+    if (!a) return;
+    const t = Math.min(1, (Date.now() - a.start) / a.dur);
+    // easeInOutQuad
+    const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    const pitch = a.fromPitch + (a.toPitch - a.fromPitch) * e;
+    // shortest-path bearing interpolation
+    const db = ((a.toBearing - a.fromBearing + 180) % 360 + 360) % 360 - 180;
+    const bearing = a.fromBearing + db * e;
+    this.camera.jumpTo({ pitch, bearing });
+    this._needsRender = true;
+    if (t >= 1) {
+      this._camAnim = null;
+      this.engine.onViewportChange();
+    }
   }
 
   requestRender(): void {

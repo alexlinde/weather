@@ -30,6 +30,7 @@ export function RadarSurface({ radar, style, showLegend, testID }: RadarSurfaceP
           <GLHost
             onCreated={radar.onGLCreated}
             onResize={radar.onResize}
+            onWheelZoom={(fx, fy, dz) => radar.controller.zoomAround(fx, fy, dz)}
             style={StyleSheet.absoluteFill}
           />
         </View>
