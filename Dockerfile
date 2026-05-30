@@ -4,10 +4,10 @@ RUN corepack enable
 WORKDIR /build
 
 # Install workspace deps (manifests first for layer caching).
-COPY pnpm-workspace.yaml package.json ./
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY packages/shared/package.json packages/shared/package.json
 COPY apps/mobile/package.json apps/mobile/package.json
-RUN pnpm install --no-frozen-lockfile
+RUN pnpm install --frozen-lockfile
 
 # Copy sources and export the web app. The web bundle resolves the backend at
 # its own origin (see shared/lib/constants.ts), so no API URL is baked in.

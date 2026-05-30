@@ -2,6 +2,7 @@
   "name": "weather",
   "private": true,
   "description": "Unified weather monorepo: FastAPI backend (MRMS radar pipeline + Weather Company proxy) and an Expo React Native app (iOS + web) with a native GL radar component.",
+  "packageManager": "pnpm@10.32.1",
   "scripts": {
     "dev:backend": "uvicorn backend.main:app --reload --port 8000",
     "dev:mobile": "pnpm --filter mobile start",
