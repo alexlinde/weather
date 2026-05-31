@@ -135,7 +135,10 @@ class TileTextureCache {
     tex.wrapS = THREE.ClampToEdgeWrapping;
     tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.generateMipmaps = false;
-    tex.flipY = true;
+    // The atlas bytes from /atlas-raw are row-major north-first, and the shader's
+    // sampleBand already inverts via (1.0 - uv.y), so the DataTexture must NOT be
+    // flipped — flipY=true here mirrors each tile north↔south (radar offset bug).
+    tex.flipY = false;
     tex.needsUpdate = true;
     this._textures.set(k, { t: tex, lu: now(), z });
     this._evict();
